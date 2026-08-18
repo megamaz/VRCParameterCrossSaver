@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set VENV_DIR=.venv
+set VENV_DIR=venv
 set REQ_FILE=requirements.txt
 
 if not exist "%VENV_DIR%" (
