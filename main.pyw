@@ -32,7 +32,6 @@ def set_param(name, value):
 
 def on_avatar_change(address, *args):
     global registered_params
-    avatar_id = args[0]
     print(f"Avatar changed event, updating saved params.")
 
     for param, content in registered_params.items():
@@ -49,6 +48,7 @@ def on_parameter(address, *args):
     address = address[len("/avatar/parameters/"):]
 
     existing_contents = registered_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
+
     registered_params[address] = {
         "value": value,
         "min": min(existing_contents["min"], value),
@@ -71,7 +71,7 @@ def pygame_loop():
     pygame.init()
     pygame.display.set_caption("Parameter Cross-Saver")
 
-    screen = pygame.display.set_mode((820, 600), pygame.SRCALPHA)
+    screen = pygame.display.set_mode((730, 600), pygame.SRCALPHA)
     font = pygame.font.SysFont(None, FONT_SIZE)
     bigger_font = pygame.font.SysFont(None, 50)
     clock = pygame.time.Clock()
@@ -86,7 +86,7 @@ def pygame_loop():
                 running = False
                 break
             if event.type == pygame.MOUSEWHEEL:
-                offset += event.y * 10
+                offset += event.y * 30
 
             if event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
@@ -96,8 +96,8 @@ def pygame_loop():
                     if param_index < len(params):
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
                             registered_params[params[param_index]]['saved']['on_avatar_swap'] = not registered_params[params[param_index]]['saved']['on_avatar_swap']
-                        elif event.pos[0] >= 728 and event.pos[0] <= 746:
-                            registered_params[params[param_index]]['saved']['on_world_swap'] = not registered_params[params[param_index]]['saved']['on_world_swap']
+                        # elif event.pos[0] >= 728 and event.pos[0] <= 746:
+                        #     registered_params[params[param_index]]['saved']['on_world_swap'] = not registered_params[params[param_index]]['saved']['on_world_swap']
                         
         
 
@@ -105,13 +105,22 @@ def pygame_loop():
 
         for param, content in registered_params.items():
             padded_y_pos = (FONT_SIZE + padding[1]) * index + offset
-            label_text = font.render(f"[{content['min']}, {content['max']}] {param}={content['value']}", True, (255, 255, 255))
+            label_text = font.render(f"{param}", True, (255, 255, 255))
+            if type(content['value']) == float:
+                value_text = font.render(f"{content['value']:.4f}", True, (255, 255, 255))
+            else:
+                value_text = font.render(str(content['value']), True, (255, 255, 255))
+
             value = (content["value"] - content["min"]) / (content["max"] - content["min"])
 
             color = (0, 130, 0)
             pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value, FONT_SIZE))
 
             screen.blit(label_text, (padding[0], padded_y_pos + padding[1]/2))
+
+            value_rect = value_text.get_rect(topright=(700, padded_y_pos + padding[1] / 2))
+            screen.blit(label_text, (padding[0], padded_y_pos + padding[1]/2))
+            screen.blit(value_text, value_rect)
 
             # saved statuses
             pygame.draw.rect(screen, (255, 255, 255), (700 + padding[0], padded_y_pos, FONT_SIZE, FONT_SIZE), 0 if content['saved']['on_avatar_swap'] else 2)
@@ -151,6 +160,7 @@ async def main():
     print("OSC server listening on 127.0.0.1:9001")
 
     try:
+        on_avatar_change("reset") # to update params on app launch
         while True:
             await asyncio.sleep(1)
             if not running:
@@ -161,7 +171,7 @@ async def main():
 
         filtered_params = {}
         for param, content in registered_params.items():
-            if content['saved']['on_avatar_swap'] or content['saved']['on_world_swap']:
+            if content['saved']['on_avatar_swap']:
                 filtered_params[param] = content
 
         json.dump(filtered_params, open("./params.json", "w", encoding="utf-8"))
