@@ -1,10 +1,12 @@
-#! ./venv/Scripts/pythonw.exe
+#! ./venv/Scripts/python.exe
 
 import threading
 import asyncio
 import pygame
 import json
+import copy
 import os
+import re
 
 from pythonosc.dispatcher import Dispatcher
 from pythonosc.osc_server import AsyncIOOSCUDPServer
@@ -14,34 +16,132 @@ VRCHAT_IP = "127.0.0.1"
 VRCHAT_IN_PORT = 9000   # VRChat receives here
 VRCHAT_OUT_PORT = 9001  # VRChat sends here
 FONT_SIZE = 18
+# Parameters that will show up in the list but aren't parameters that can be saved (or parameters that aren't worth saving)
+UNSAVEABLE = ["ScaleFactor", 
+              "ScaleFactorInverse",
+              "ScaleModified",
+              "EyeHeightAsPercent",
+              "AFK",
+              "Upright",
+              "AngularY",
+              "VelocityX",
+              "VelocityY",
+              "VelocityZ",
+              "VelocityMagnitude",
+              "Grounded",
+              "Seated",
+              "TrackingType",
+              "VRMode",
+              "MuteSelf",
+              "IsLocal",
+              "PreviewMode",
+              "Viseme",
+              "Voice",
+              "GestureLeft",
+              "GestureLeftWeight",
+              "GestureRight",
+              "GestureRightWeight",
+              "InStation",
+              "EarMuffs",
+              "IsOnFriendsList",
+              "AvatarVersion",
+              "IsAnimatorEnabled"]
+
+# list of VRCF-controlled parameters that shouldn't be controlled.
+# TODO if a user is mean and decides to name their param something that matches this pattern, they'll be blocked from saving it.
+# but who would do that?
+VRCF_UNSAVEABLE_PATTERNS = [
+    r"^VF\d+_SyncData(Bool|Num|Float)\d+",
+    r"^VF\d+_SyncIndex\d+",
+    r"^VF\d+_VF\d+",
+    r"^VF\d+_.*tracking"
+    r"^VF\d+_.*SPS"
+]
+
+# only allow saving EyeHeightAsMeters, so that it can be manually handled later.
+EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
+
+HOLD_TIME = 0.5 # ????????? this will need finetuning
 
 client = SimpleUDPClient(VRCHAT_IP, VRCHAT_IN_PORT)
+
+active_state = "IDLE"
 
 if not os.path.exists("./params.json"):
     open("./params.json", "w", encoding="utf-8").write(r"{}")
 
 registered_params = json.load(open("./params.json", "r", encoding="utf-8"))
-
 running = True
 
+
+class ParamTracker:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.current_avatar_id = None
+        self.confirmed_values = {}   # what you actually trust/save
+        self.pending = {}            # address -> Timer
+
+    def on_param_update(self, address, *args):
+        value = args[0] if args else None
+        with self.lock:
+            if address in self.pending:
+                self.pending[address].cancel()
+
+            avatar_at_receipt = self.current_avatar_id
+
+            def commit():
+                existing_contents = registered_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
+                with self.lock:
+                    if self.current_avatar_id == avatar_at_receipt:
+                        self.confirmed_values[address] = {
+                            'value': value,
+                            "min": min(existing_contents["min"], value),
+                            "max": max(existing_contents["max"], value),
+                            "saved": {
+                                "on_avatar_swap": existing_contents['saved']['on_avatar_swap'],
+                                "on_world_swap": existing_contents['saved']['on_world_swap']
+                            }
+                        }
+                    self.pending.pop(address, None)
+
+            t = threading.Timer(HOLD_TIME, commit)
+            self.pending[address] = t
+            t.start()
+
+    def on_avatar_change(self, address, new_avatar_id):
+        update_all_params(self.confirmed_values)
+
+        with self.lock:
+            for t in self.pending.values():
+                t.cancel()
+            self.pending.clear()
+            self.current_avatar_id = new_avatar_id
+            self.confirmed_values = copy.deepcopy(registered_params)
+
+
+tracker = ParamTracker()
+tracker.confirmed_values.update(registered_params)
+
 def set_param(name, value):
-    client.send_message(
-        f"/avatar/parameters/{name}",
-        value
-    )
+    if name == EYE_HEIGHT_PARAM:
+        client.send_message("/avatar/eyeheight", value)
+        return
+    
+    client.send_message(f"/avatar/parameters/{name}", value)
 
-def on_avatar_change(address, *args):
-    global registered_params
-    print(f"Avatar changed event, updating saved params.")
-
-    for param, content in registered_params.items():
+def update_all_params(param_content):
+    for param, content in param_content.items():
         if not content["saved"]["on_avatar_swap"]:
             continue
 
         print(f"Updated saved param {param} to {content['value']}")
         set_param(param, content['value'])
 
+def on_avatar_change(address, *args):
+    tracker.on_avatar_change(address, args[0])
+
 def on_parameter(address, *args):
+    # we keep the registered params for live updates
     global registered_params
 
     value = args[0]
@@ -59,6 +159,8 @@ def on_parameter(address, *args):
         }
     }
 
+    tracker.on_param_update(address, *args)
+
 
 dispatcher = Dispatcher()
 
@@ -71,7 +173,7 @@ def pygame_loop():
     pygame.init()
     pygame.display.set_caption("Parameter Cross-Saver")
 
-    screen = pygame.display.set_mode((730, 600), pygame.SRCALPHA)
+    screen = pygame.display.set_mode((730, 600), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
     font = pygame.font.SysFont(None, FONT_SIZE)
     bigger_font = pygame.font.SysFont(None, 50)
     clock = pygame.time.Clock()
@@ -93,17 +195,24 @@ def pygame_loop():
                     # discover the param at that Y value
                     param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
                     params = list(registered_params.keys())
-                    if param_index < len(params):
+                    if param_index < len(params) and params[param_index] not in UNSAVEABLE:
+                        param_name = params[param_index]
+                        param_content = registered_params[param_name]
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
-                            registered_params[params[param_index]]['saved']['on_avatar_swap'] = not registered_params[params[param_index]]['saved']['on_avatar_swap']
+                            param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
                         # elif event.pos[0] >= 728 and event.pos[0] <= 746:
                         #     registered_params[params[param_index]]['saved']['on_world_swap'] = not registered_params[params[param_index]]['saved']['on_world_swap']
+            
+            if event.type == pygame.VIDEORESIZE:
+                screen = pygame.display.set_mode((730, max(event.h, 300)), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
                         
-        
-
         index = 1
 
         for param, content in registered_params.items():
+            # for drawing
+            is_item_saveable = param not in UNSAVEABLE
+            param_is_vrcfury = any(re.match(pat, param) is not None for pat in VRCF_UNSAVEABLE_PATTERNS)
+
             padded_y_pos = (FONT_SIZE + padding[1]) * index + offset
             label_text = font.render(f"{param}", True, (255, 255, 255))
             if type(content['value']) == float:
@@ -114,6 +223,12 @@ def pygame_loop():
             value = (content["value"] - content["min"]) / (content["max"] - content["min"])
 
             color = (0, 130, 0)
+            if param in UNSAVEABLE:
+                color = (130, 0, 0)
+            elif param.startswith("VF") and not content['saved']['on_avatar_swap']:
+                color = (130, 130, 0)
+
+            pygame.draw.rect(screen, (60, 60, 60), (0, padded_y_pos, 700, FONT_SIZE))    
             pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value, FONT_SIZE))
 
             screen.blit(label_text, (padding[0], padded_y_pos + padding[1]/2))
@@ -123,7 +238,10 @@ def pygame_loop():
             screen.blit(value_text, value_rect)
 
             # saved statuses
-            pygame.draw.rect(screen, (255, 255, 255), (700 + padding[0], padded_y_pos, FONT_SIZE, FONT_SIZE), 0 if content['saved']['on_avatar_swap'] else 2)
+            if is_item_saveable and not param_is_vrcfury:
+                pygame.draw.rect(screen, (255, 255, 255), (700 + padding[0], padded_y_pos, FONT_SIZE, FONT_SIZE), 0 if content['saved']['on_avatar_swap'] else 2)
+            else:
+                pygame.draw.rect(screen, (120, 120, 120), (700 + padding[0], padded_y_pos, FONT_SIZE, FONT_SIZE), 2)
             # pygame.draw.rect(screen, (255, 255, 255), (700 + FONT_SIZE + padding[0] * 2, padded_y_pos, FONT_SIZE, FONT_SIZE), 0 if content['saved']['on_world_swap'] else 2)
             
             index += 1
@@ -160,7 +278,6 @@ async def main():
     print("OSC server listening on 127.0.0.1:9001")
 
     try:
-        on_avatar_change("reset") # to update params on app launch
         while True:
             await asyncio.sleep(1)
             if not running:
