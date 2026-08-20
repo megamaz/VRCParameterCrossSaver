@@ -122,6 +122,9 @@ class ParamTracker:
 tracker = ParamTracker()
 tracker.confirmed_values.update(registered_params)
 
+def lerp(a, b, t):
+    return a + (b-a)*t
+
 def set_param(name, value):
     if name == EYE_HEIGHT_PARAM:
         client.send_message("/avatar/eyeheight", value)
@@ -204,6 +207,15 @@ def pygame_loop():
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
                             param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
                             tracker.confirmed_values[param_name] = param_content
+                        elif event.pos[0] <= 700:
+                            # compute the value to set it to based on the mouse's X position
+                            # 700 is max, 0 is minimum
+                            if type(param_content['value']) == bool:
+                                set_param(param_name, not param_content['value'])
+                            else:
+                                t = event.pos[0]/700
+                                set_param(param_name, lerp(param_content['min'], param_content['max'], t))
+
                         # elif event.pos[0] >= 728 and event.pos[0] <= 746:
                         #     registered_params[params[param_index]]['saved']['on_world_swap'] = not registered_params[params[param_index]]['saved']['on_world_swap']
             
