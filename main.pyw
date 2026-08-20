@@ -1,4 +1,4 @@
-#! ./venv/Scripts/python.exe
+#! ./venv/Scripts/pythonW.exe
 
 import threading
 import asyncio
@@ -51,11 +51,11 @@ UNSAVEABLE = ["ScaleFactor",
 # TODO if a user is mean and decides to name their param something that matches this pattern, they'll be blocked from saving it.
 # but who would do that?
 VRCF_UNSAVEABLE_PATTERNS = [
-    r"^VF\d+_SyncData(Bool|Num|Float)\d+",
-    r"^VF\d+_SyncIndex\d+",
-    r"^VF\d+_VF\d+",
-    r"^VF\d+_.*tracking"
-    r"^VF\d+_.*SPS"
+    r"^VF\d+_SyncData(Bool|Num|Float)\d+", # VRCF Unlimited Parameters controlled variables
+    r"^VF\d+_SyncIndex\d+",                # ^^
+    r"^VF\d+_VF\d+",                       # some parameters are doubles of existing ones
+    r"^VF\d+_TC",                          # VRCF Tracking state tracker for each limb
+    r"^VF\d+_.*SPS",                       # VRCF SPS State trackers and managers
 ]
 
 # only allow saving EyeHeightAsMeters, so that it can be manually handled later.
@@ -137,6 +137,9 @@ def update_all_params(param_content):
         print(f"Updated saved param {param} to {content['value']}")
         set_param(param, content['value'])
 
+def is_fury_param(p:str):
+    return any([re.match(pat, p) is not None for pat in VRCF_UNSAVEABLE_PATTERNS])
+
 def on_avatar_change(address, *args):
     tracker.on_avatar_change(address, args[0])
 
@@ -195,11 +198,12 @@ def pygame_loop():
                     # discover the param at that Y value
                     param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
                     params = list(registered_params.keys())
-                    if param_index < len(params) and params[param_index] not in UNSAVEABLE:
+                    if param_index < len(params) and params[param_index] not in UNSAVEABLE and not is_fury_param(params[param_index]):
                         param_name = params[param_index]
                         param_content = registered_params[param_name]
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
                             param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
+                            tracker.confirmed_values[param_name] = param_content
                         # elif event.pos[0] >= 728 and event.pos[0] <= 746:
                         #     registered_params[params[param_index]]['saved']['on_world_swap'] = not registered_params[params[param_index]]['saved']['on_world_swap']
             
@@ -211,7 +215,7 @@ def pygame_loop():
         for param, content in registered_params.items():
             # for drawing
             is_item_saveable = param not in UNSAVEABLE
-            param_is_vrcfury = any(re.match(pat, param) is not None for pat in VRCF_UNSAVEABLE_PATTERNS)
+            param_is_vrcfury = is_fury_param(param)
 
             padded_y_pos = (FONT_SIZE + padding[1]) * index + offset
             label_text = font.render(f"{param}", True, (255, 255, 255))
@@ -222,13 +226,19 @@ def pygame_loop():
 
             value = (content["value"] - content["min"]) / (content["max"] - content["min"])
 
+            # value_saved = tracker.confirmed_values.get(param)
+            # if value_saved:
+            #     value_saved = (value_saved['value'] - content["min"]) / (content["max"] - content["min"])
+
             color = (0, 130, 0)
             if param in UNSAVEABLE:
                 color = (130, 0, 0)
-            elif param.startswith("VF") and not content['saved']['on_avatar_swap']:
+            elif param_is_vrcfury and not content['saved']['on_avatar_swap']:
                 color = (130, 130, 0)
 
-            pygame.draw.rect(screen, (60, 60, 60), (0, padded_y_pos, 700, FONT_SIZE))    
+            pygame.draw.rect(screen, (60, 60, 60), (0, padded_y_pos, 700, FONT_SIZE))
+            # if value_saved:
+            #     pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value_saved, FONT_SIZE/2))
             pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value, FONT_SIZE))
 
             screen.blit(label_text, (padding[0], padded_y_pos + padding[1]/2))
