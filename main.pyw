@@ -300,6 +300,7 @@ async def main():
     print("OSC server listening on 127.0.0.1:9001")
 
     try:
+        update_all_params(registered_params)
         while True:
             await asyncio.sleep(1)
             if not running:
