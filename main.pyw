@@ -56,6 +56,7 @@ VRCF_UNSAVEABLE_PATTERNS = [
     r"^VF\d+_VF\d+",                       # some parameters are doubles of existing ones
     r"^VF\d+_TC",                          # VRCF Tracking state tracker for each limb
     r"^VF\d+_.*SPS",                       # VRCF SPS State trackers and managers
+    r"VF\d+_.*"                            # this one technically blocks all VF parameters making all the above ones redundant lol
 ]
 
 # only allow saving EyeHeightAsMeters, so that it can be manually handled later.
@@ -201,7 +202,7 @@ def pygame_loop():
                     # discover the param at that Y value
                     param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
                     params = list(registered_params.keys())
-                    if param_index < len(params) and params[param_index] not in UNSAVEABLE and not is_fury_param(params[param_index]):
+                    if param_index < len(params) and params[param_index] not in UNSAVEABLE:
                         param_name = params[param_index]
                         param_content = registered_params[param_name]
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
@@ -245,7 +246,7 @@ def pygame_loop():
             color = (0, 130, 0)
             if param in UNSAVEABLE:
                 color = (130, 0, 0)
-            elif param_is_vrcfury and not content['saved']['on_avatar_swap']:
+            elif param_is_vrcfury:
                 color = (130, 130, 0)
 
             pygame.draw.rect(screen, (60, 60, 60), (0, padded_y_pos, 700, FONT_SIZE))
@@ -260,7 +261,7 @@ def pygame_loop():
             screen.blit(value_text, value_rect)
 
             # saved statuses
-            if is_item_saveable and not param_is_vrcfury:
+            if is_item_saveable:
                 pygame.draw.rect(screen, (255, 255, 255), (700 + padding[0], padded_y_pos, FONT_SIZE, FONT_SIZE), 0 if content['saved']['on_avatar_swap'] else 2)
             else:
                 pygame.draw.rect(screen, (120, 120, 120), (700 + padding[0], padded_y_pos, FONT_SIZE, FONT_SIZE), 2)
