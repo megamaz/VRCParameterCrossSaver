@@ -1,4 +1,4 @@
-#! ./venv/Scripts/pythonW.exe
+#! ./venv/Scripts/python.exe
 
 import threading
 import asyncio
@@ -8,13 +8,9 @@ import copy
 import os
 import re
 
-from pythonosc.dispatcher import Dispatcher
-from pythonosc.osc_server import AsyncIOOSCUDPServer
-from pythonosc.udp_client import SimpleUDPClient
+from vrchat_oscquery.asyncio import vrc_osc
+from vrchat_oscquery.common import vrc_client, dict_to_dispatcher
 
-VRCHAT_IP = "127.0.0.1"
-VRCHAT_IN_PORT = 9000   # VRChat receives here
-VRCHAT_OUT_PORT = 9001  # VRChat sends here
 FONT_SIZE = 18
 # Parameters that will show up in the list but aren't parameters that can be saved (or parameters that aren't worth saving)
 UNSAVEABLE = ["ScaleFactor", 
@@ -64,7 +60,7 @@ EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 
 HOLD_TIME = 0.5 # ????????? this will need finetuning
 
-client = SimpleUDPClient(VRCHAT_IP, VRCHAT_IN_PORT)
+client = vrc_client()
 
 active_state = "IDLE"
 
@@ -167,12 +163,6 @@ def on_parameter(address, *args):
     }
 
     tracker.on_param_update(address, *args)
-
-
-dispatcher = Dispatcher()
-
-dispatcher.map("/avatar/change", on_avatar_change)
-dispatcher.map("/avatar/parameters/*", on_parameter)
 
 def pygame_loop():
     global running
@@ -288,28 +278,21 @@ async def main():
 
     pygame_thread.start()
 
-    loop = asyncio.get_running_loop()
-
-    server = AsyncIOOSCUDPServer(
-        ("127.0.0.1", VRCHAT_OUT_PORT),
-        dispatcher,
-        loop,
-    )
-
-    transport, protocol = await server.create_serve_endpoint()
-
-    print("OSC server listening on 127.0.0.1:9001")
+    server = vrc_osc("Parameter Cross-Saver", dict_to_dispatcher({
+        "/avatar/parameters/*" : on_parameter,
+        "/avatar/change" : on_avatar_change
+    }))
 
     try:
         update_all_params(registered_params)
+        await server
         while True:
             await asyncio.sleep(1)
             if not running:
                 break
 
     finally:
-        transport.close()
-
+        server.close()
         filtered_params = {}
         for param, content in registered_params.items():
             if content['saved']['on_avatar_swap']:
