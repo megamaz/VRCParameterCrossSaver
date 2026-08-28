@@ -58,7 +58,7 @@ VRCF_UNSAVEABLE_PATTERNS = [
 # only allow saving EyeHeightAsMeters, so that it can be manually handled later.
 EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 
-HOLD_TIME = 0.5 # ????????? this will need finetuning
+HOLD_TIME = 1.25 # ????????? this will need finetuning
 
 client = vrc_client()
 
