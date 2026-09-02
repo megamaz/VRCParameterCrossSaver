@@ -1,4 +1,4 @@
-#! ./venv/Scripts/python.exe
+#! ./venv/Scripts/pythonw.exe
 
 import threading
 import asyncio
@@ -170,7 +170,7 @@ def on_parameter(address, *args):
             "on_world_swap": existing_contents['saved']['on_world_swap']
         }
     }
-    
+
     if registered_params[address]["saved"]["on_avatar_swap"]:
         log.debug(f"Saved param update: {address}={value}")
         tracker.on_param_update(address, *args)
