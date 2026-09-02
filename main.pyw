@@ -1,4 +1,4 @@
-#! ./venv/Scripts/pythonw.exe
+#! ./venv/Scripts/python.exe
 
 import threading
 import asyncio
@@ -10,6 +10,7 @@ import re
 
 from vrchat_oscquery.asyncio import vrc_osc
 from vrchat_oscquery.common import vrc_client, dict_to_dispatcher
+from custom_logger import setup_logging
 
 FONT_SIZE = 18
 # Parameters that will show up in the list but aren't parameters that can be saved (or parameters that aren't worth saving)
@@ -58,18 +59,20 @@ VRCF_UNSAVEABLE_PATTERNS = [
 # only allow saving EyeHeightAsMeters, so that it can be manually handled later.
 EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 
-HOLD_TIME = 1.25 # ????????? this will need finetuning
+# vrchat sends out saved param updates immediately before the avatar change event, all within 0.1 seconds.
+# this hold time needs to be small to avoid real changes from being discarded, and short so that it doesn't catch fake changes.
+HOLD_TIME = 0.25 
 
 client = vrc_client()
 
 active_state = "IDLE"
+log = setup_logging()
 
 if not os.path.exists("./params.json"):
     open("./params.json", "w", encoding="utf-8").write(r"{}")
 
 registered_params = json.load(open("./params.json", "r", encoding="utf-8"))
 running = True
-
 
 class ParamTracker:
     def __init__(self):
@@ -88,6 +91,7 @@ class ParamTracker:
 
             def commit():
                 existing_contents = registered_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
+                log.debug(f"Committing value {value} to address {address} ")
                 with self.lock:
                     if self.current_avatar_id == avatar_at_receipt:
                         self.confirmed_values[address] = {
@@ -106,13 +110,15 @@ class ParamTracker:
             t.start()
 
     def on_avatar_change(self, address, new_avatar_id):
-        update_all_params(self.confirmed_values)
 
         with self.lock:
+            log.debug(f"Discarding {len(self.pending)} updates.")
             for t in self.pending.values():
                 t.cancel()
             self.pending.clear()
             self.current_avatar_id = new_avatar_id
+
+            update_all_params(self.confirmed_values)
             self.confirmed_values = copy.deepcopy(registered_params)
 
 
@@ -124,23 +130,26 @@ def lerp(a, b, t):
 
 def set_param(name, value):
     if name == EYE_HEIGHT_PARAM:
+        log.debug(f"Sent out height param to {value}")
         client.send_message("/avatar/eyeheight", value)
         return
-    
+
+    log.debug(f"Sent out param {name} to {value}")
     client.send_message(f"/avatar/parameters/{name}", value)
 
 def update_all_params(param_content):
+    log.info(f"Updating all saved parameters")
     for param, content in param_content.items():
         if not content["saved"]["on_avatar_swap"]:
             continue
 
-        print(f"Updated saved param {param} to {content['value']}")
         set_param(param, content['value'])
 
 def is_fury_param(p:str):
     return any([re.match(pat, p) is not None for pat in VRCF_UNSAVEABLE_PATTERNS])
 
 def on_avatar_change(address, *args):
+    log.info(f"Received avatar change event to {args[0]}")
     tracker.on_avatar_change(address, args[0])
 
 def on_parameter(address, *args):
@@ -161,12 +170,17 @@ def on_parameter(address, *args):
             "on_world_swap": existing_contents['saved']['on_world_swap']
         }
     }
-
-    tracker.on_param_update(address, *args)
+    
+    if registered_params[address]["saved"]["on_avatar_swap"]:
+        log.debug(f"Saved param update: {address}={value}")
+        tracker.on_param_update(address, *args)
 
 def pygame_loop():
     global running
     global registered_params
+
+    log.info("Starting pygame loop")
+
     pygame.init()
     pygame.display.set_caption("Parameter Cross-Saver")
 
@@ -196,6 +210,7 @@ def pygame_loop():
                         param_name = params[param_index]
                         param_content = registered_params[param_name]
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
+                            log.debug(f"Received click for parameter {param_name}")
                             param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
                             tracker.confirmed_values[param_name] = param_content
                         elif event.pos[0] <= 700:
