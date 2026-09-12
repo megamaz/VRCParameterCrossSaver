@@ -110,7 +110,8 @@ class ParamTracker:
             t.start()
 
     def on_avatar_change(self, address, new_avatar_id):
-
+        global registered_params
+        
         with self.lock:
             log.debug(f"Discarding {len(self.pending)} updates.")
             for t in self.pending.values():
@@ -120,6 +121,8 @@ class ParamTracker:
 
             update_all_params(self.confirmed_values)
             self.confirmed_values = copy.deepcopy(registered_params)
+            # TODO make it better
+            registered_params = json.load(open("./params.json", "r", encoding="utf-8"))
 
 
 tracker = ParamTracker()
