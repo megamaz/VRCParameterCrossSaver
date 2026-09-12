@@ -121,8 +121,7 @@ class ParamTracker:
 
             update_all_params(self.confirmed_values)
             self.confirmed_values = copy.deepcopy(registered_params)
-            # TODO make it better
-            registered_params = json.load(open("./params.json", "r", encoding="utf-8"))
+            registered_params = [{k: i} for k, i in registered_params.items() if i['saved']['on_avatar_swap']]
 
 
 tracker = ParamTracker()
