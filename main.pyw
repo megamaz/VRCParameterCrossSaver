@@ -1,4 +1,4 @@
-#! ./venv/Scripts/pythonw.exe
+#! ./venv/Scripts/python.exe
 
 import threading
 import asyncio
@@ -302,14 +302,18 @@ async def main():
 
     try:
         update_all_params(registered_params)
+
+        log.info("Starting VRChat OSC Session")
         await server
-        while True:
+        while running and pygame_thread.is_alive():
             await asyncio.sleep(1)
-            if not running:
-                break
+        log.info("Detected pygame thread death / window close")
 
     finally:
+        log.info("Closing OSC Session")
         server.close()
+
+        log.info("Saving parameters to local file")
         filtered_params = {}
         for param, content in registered_params.items():
             if content['saved']['on_avatar_swap']:
