@@ -1,4 +1,4 @@
-#! ./venv/Scripts/python.exe
+#! ./venv/Scripts/pythonw.exe
 
 import threading
 import asyncio
