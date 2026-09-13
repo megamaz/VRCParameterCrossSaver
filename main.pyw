@@ -120,8 +120,14 @@ class ParamTracker:
             self.current_avatar_id = new_avatar_id
 
             update_all_params(self.confirmed_values)
+            filtered_params = {}
+            for param, content in registered_params.items():
+                if content['saved']['on_avatar_swap']:
+                    filtered_params[param] = content
+                    
+            registered_params = filtered_params
             self.confirmed_values = copy.deepcopy(registered_params)
-            registered_params = [{k: i} for k, i in registered_params.items() if i['saved']['on_avatar_swap']]
+            
 
 
 tracker = ParamTracker()
