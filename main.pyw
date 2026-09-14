@@ -4,6 +4,7 @@ import threading
 import asyncio
 import pygame
 import json
+import time
 import copy
 import os
 import re
@@ -61,7 +62,8 @@ EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 
 # vrchat sends out saved param updates immediately before the avatar change event, all within 0.1 seconds.
 # this hold time needs to be small to avoid real changes from being discarded, and short so that it doesn't catch fake changes.
-HOLD_TIME = 0.25 
+HOLD_TIME = 0.5
+GRACE_PERIOD = 0.9
 
 client = vrc_client()
 
@@ -71,27 +73,32 @@ if not os.path.exists("./params.json"):
     open("./params.json", "w", encoding="utf-8").write(r"{}")
 
 live_tracked_params = json.load(open("./params.json", "r", encoding="utf-8"))
+log.debug(f"Saved parameter values: {json.dumps(live_tracked_params, indent=4)}")
 running = True
 
 class ParamTracker:
     def __init__(self, init_confirm):
         self.lock = threading.Lock()
         self.current_avatar_id = None
-        self.confirmed_values = init_confirm
+        self.swap_time = 0.0
+        self.confirmed_values = copy.deepcopy(init_confirm)
         self.pending = {}            # address -> Timer
 
-    def on_param_update(self, address, *args):
+    def handle_param_change(self, address, *args):
         value = args[0] if args else None
         with self.lock:
             if address in self.pending:
                 self.pending[address].cancel()
 
             avatar_at_receipt = self.current_avatar_id
+            swap_time_at_receipt = self.swap_time
 
             def commit():
                 existing_contents = live_tracked_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
                 with self.lock:
-                    if self.current_avatar_id == avatar_at_receipt:
+                    still_same_avatar = self.current_avatar_id == avatar_at_receipt
+                    past_grace_period = (time.monotonic() - swap_time_at_receipt) >= GRACE_PERIOD
+                    if still_same_avatar and past_grace_period:
                         log.debug(f"Committing value {value} to address {address} ")
                         self.confirmed_values[address] = {
                             'value': value,
@@ -102,26 +109,33 @@ class ParamTracker:
                                 "on_world_swap": existing_contents['saved']['on_world_swap']
                             }
                         }
+                    else:
+                        if not still_same_avatar:
+                            log.debug(f"Rejected commit for {address}={value} (no longer same avatar)")
+                        if not past_grace_period:
+                            log.debug(f"Rejected commit for {address}={value} (past grace period)")
                     self.pending.pop(address, None)
 
             t = threading.Timer(HOLD_TIME, commit)
             self.pending[address] = t
             t.start()
 
-    def on_avatar_change(self, address, new_avatar_id):
+    def handle_avatar_change(self, address, new_avatar_id):
+        log.info("Handling avatar change event")
         with self.lock:
             log.debug(f"Discarding {len(self.pending)} updates.")
             for t in self.pending.values():
                 t.cancel()
             self.pending.clear()
             self.current_avatar_id = new_avatar_id
+            self.swap_time = time.monotonic()
 
             filtered_params = {}
             for param, content in self.confirmed_values.items():
                 if content['saved']['on_avatar_swap']:
                     filtered_params[param] = content
 
-        update_all_params(self.confirmed_values)
+            update_all_params(self.confirmed_values)
 
 tracker = ParamTracker(live_tracked_params)
 
@@ -134,7 +148,7 @@ def set_param(name, value):
         client.send_message("/avatar/eyeheight", value)
         return
 
-    log.debug(f"Sent out param {name} to {value}")
+    log.debug(f"Sent out param {name}={value}")
     client.send_message(f"/avatar/parameters/{name}", value)
 
 def update_all_params(param_content):
@@ -150,7 +164,7 @@ def is_fury_param(p:str):
 
 def on_avatar_change(address, *args):
     log.info(f"Received avatar change event to {args[0]}")
-    tracker.on_avatar_change(address, args[0])
+    tracker.handle_avatar_change(address, args[0])
 
 def on_parameter(address, *args):
     global live_tracked_params
@@ -171,8 +185,8 @@ def on_parameter(address, *args):
     }
 
     if live_tracked_params[address]["saved"]["on_avatar_swap"]:
-        log.debug(f"Saved param update: {address}={value}")
-        tracker.on_param_update(address, *args)
+        log.debug(f"Saved param change: {address}={value}")
+        tracker.handle_param_change(address, *args)
 
 def pygame_loop():
     global running
@@ -300,6 +314,7 @@ async def main():
     try:
         # sending out internally saved values, before the server started
         # no risk of this containing stale data
+        log.debug("Updating saved parameters with data from save file")
         update_all_params(live_tracked_params)
 
         log.info("Starting VRChat OSC Session")
