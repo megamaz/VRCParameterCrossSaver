@@ -65,20 +65,19 @@ HOLD_TIME = 0.25
 
 client = vrc_client()
 
-active_state = "IDLE"
 log = setup_logging()
 
 if not os.path.exists("./params.json"):
     open("./params.json", "w", encoding="utf-8").write(r"{}")
 
-registered_params = json.load(open("./params.json", "r", encoding="utf-8"))
+live_tracked_params = json.load(open("./params.json", "r", encoding="utf-8"))
 running = True
 
 class ParamTracker:
-    def __init__(self):
+    def __init__(self, init_confirm):
         self.lock = threading.Lock()
         self.current_avatar_id = None
-        self.confirmed_values = {}   # what you actually trust/save
+        self.confirmed_values = init_confirm
         self.pending = {}            # address -> Timer
 
     def on_param_update(self, address, *args):
@@ -90,10 +89,10 @@ class ParamTracker:
             avatar_at_receipt = self.current_avatar_id
 
             def commit():
-                existing_contents = registered_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
-                log.debug(f"Committing value {value} to address {address} ")
+                existing_contents = live_tracked_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
                 with self.lock:
                     if self.current_avatar_id == avatar_at_receipt:
+                        log.debug(f"Committing value {value} to address {address} ")
                         self.confirmed_values[address] = {
                             'value': value,
                             "min": min(existing_contents["min"], value),
@@ -110,8 +109,6 @@ class ParamTracker:
             t.start()
 
     def on_avatar_change(self, address, new_avatar_id):
-        global registered_params
-        
         with self.lock:
             log.debug(f"Discarding {len(self.pending)} updates.")
             for t in self.pending.values():
@@ -119,19 +116,14 @@ class ParamTracker:
             self.pending.clear()
             self.current_avatar_id = new_avatar_id
 
-            update_all_params(self.confirmed_values)
             filtered_params = {}
-            for param, content in registered_params.items():
+            for param, content in self.confirmed_values.items():
                 if content['saved']['on_avatar_swap']:
                     filtered_params[param] = content
-                    
-            registered_params = filtered_params
-            self.confirmed_values = copy.deepcopy(registered_params)
-            
 
+        update_all_params(self.confirmed_values)
 
-tracker = ParamTracker()
-tracker.confirmed_values.update(registered_params)
+tracker = ParamTracker(live_tracked_params)
 
 def lerp(a, b, t):
     return a + (b-a)*t
@@ -161,15 +153,14 @@ def on_avatar_change(address, *args):
     tracker.on_avatar_change(address, args[0])
 
 def on_parameter(address, *args):
-    # we keep the registered params for live updates
-    global registered_params
+    global live_tracked_params
 
     value = args[0]
     address = address[len("/avatar/parameters/"):]
 
-    existing_contents = registered_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
+    existing_contents = live_tracked_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
 
-    registered_params[address] = {
+    live_tracked_params[address] = {
         "value": value,
         "min": min(existing_contents["min"], value),
         "max": max(existing_contents["max"], value),
@@ -179,13 +170,13 @@ def on_parameter(address, *args):
         }
     }
 
-    if registered_params[address]["saved"]["on_avatar_swap"]:
+    if live_tracked_params[address]["saved"]["on_avatar_swap"]:
         log.debug(f"Saved param update: {address}={value}")
         tracker.on_param_update(address, *args)
 
 def pygame_loop():
     global running
-    global registered_params
+    global live_tracked_params
 
     log.info("Starting pygame loop")
 
@@ -213,10 +204,10 @@ def pygame_loop():
                 if event.button == 1:
                     # discover the param at that Y value
                     param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
-                    params = list(registered_params.keys())
+                    params = list(live_tracked_params.keys())
                     if param_index < len(params) and params[param_index] not in UNSAVEABLE:
                         param_name = params[param_index]
-                        param_content = registered_params[param_name]
+                        param_content = live_tracked_params[param_name]
                         if event.pos[0] >= 705 and event.pos[0] <= 722:
                             log.debug(f"Received click for parameter {param_name}")
                             param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
@@ -238,7 +229,7 @@ def pygame_loop():
                         
         index = 1
 
-        for param, content in registered_params.items():
+        for param, content in live_tracked_params.items():
             # for drawing
             is_item_saveable = param not in UNSAVEABLE
             param_is_vrcfury = is_fury_param(param)
@@ -307,7 +298,9 @@ async def main():
     }))
 
     try:
-        update_all_params(registered_params)
+        # sending out internally saved values, before the server started
+        # no risk of this containing stale data
+        update_all_params(live_tracked_params)
 
         log.info("Starting VRChat OSC Session")
         await server
@@ -321,11 +314,13 @@ async def main():
 
         log.info("Saving parameters to local file")
         filtered_params = {}
-        for param, content in registered_params.items():
+        for param, content in tracker.confirmed_values.items():
             if content['saved']['on_avatar_swap']:
                 filtered_params[param] = content
 
         json.dump(filtered_params, open("./params.json", "w", encoding="utf-8"))
+    
+    log.info("Program finished")
 
 if __name__ == "__main__":
     asyncio.run(main())
