@@ -3,6 +3,7 @@
 import threading
 import asyncio
 import pygame
+import openvr
 import json
 import time
 import copy
@@ -72,6 +73,38 @@ GRACE_PERIOD = 0.9
 client = vrc_client()
 
 log = setup_logging()
+
+# setup steamvr autolaunch
+log.info("Setting up SteamVR auto-launch")
+active_path = Path(__file__).resolve().parent
+openvr.init(openvr.VRApplication_Utility)
+apps = openvr.VRApplications()
+if not apps.isApplicationInstalled("megamaz.VRChatParameterCrossSaver"):
+    log.info("Detected app not installed, installing")
+    manifest = {
+        "applications": [
+            {
+                "app_key":"megamaz.VRChatParameterCrossSaver",
+                "launch_type": "binary",
+                "binary_path_windows": str(active_path / "venv" / "Scripts" / "pythonw.exe"),
+                "arguments": str(active_path / "main.pyw"),
+                "working_directory": str(active_path),
+                "is_dashboard_overlay": True,
+                "strings": {
+                    "en_us": {
+                        "name": "VRChat Parameter Cross-Saver"
+                    }
+                }
+            }
+        ]
+    }
+    manifest_path = active_path / "app.vrmanifest"
+    manifest_path.write_text(json.dumps(manifest))
+    apps.addApplicationManifest(str(manifest_path))
+    apps.setApplicationAutoLaunch("megamaz.VRChatParameterCrossSaver", True)
+    log.info("Successfully installed app")
+else:
+    log.info("App already installed")
 
 if not os.path.exists("./params.json"):
     open("./params.json", "w", encoding="utf-8").write(r"{}")
