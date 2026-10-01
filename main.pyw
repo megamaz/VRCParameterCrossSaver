@@ -12,8 +12,12 @@ import re
 from vrchat_oscquery.asyncio import vrc_osc
 from vrchat_oscquery.common import vrc_client, dict_to_dispatcher
 from custom_logger import setup_logging
+from pathlib import Path
+
+OSC_PATH = Path.home() / "AppData" / "LocalLow" / "VRChat" / "VRChat" / "OSC"
 
 FONT_SIZE = 18
+
 # Parameters that will show up in the list but aren't parameters that can be saved (or parameters that aren't worth saving)
 UNSAVEABLE = ["ScaleFactor", 
               "ScaleFactorInverse",
@@ -40,7 +44,7 @@ UNSAVEABLE = ["ScaleFactor",
               "GestureRight",
               "GestureRightWeight",
               "InStation",
-              "EarMuffs",
+              "Earmuffs",
               "IsOnFriendsList",
               "AvatarVersion",
               "IsAnimatorEnabled"]
@@ -76,6 +80,21 @@ live_tracked_params = json.load(open("./params.json", "r", encoding="utf-8"))
 log.debug(f"Saved parameter values: {json.dumps(live_tracked_params, indent=4)}")
 running = True
 
+def build_param_dict(value=None, min=0, max=1, s_on_avatar_swap=False, s_on_world_swap=False) -> dict:
+    """Builds a parameter dictionary to be stored. All function params have a default, so no parameters will build a default uninitialized dict."""
+    data = {
+        "min": min,
+        "max": max,
+        "saved": {
+            "on_avatar_swap": s_on_avatar_swap,
+            "on_world_swap": s_on_world_swap
+        }
+    }
+    if value is not None:
+        data["value"] = value
+
+    return data
+
 class ParamTracker:
     def __init__(self, init_confirm):
         self.lock = threading.Lock()
@@ -94,21 +113,19 @@ class ParamTracker:
             swap_time_at_receipt = self.swap_time
 
             def commit():
-                existing_contents = live_tracked_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
+                existing_contents = live_tracked_params.get(address, build_param_dict())
                 with self.lock:
                     still_same_avatar = self.current_avatar_id == avatar_at_receipt
                     past_grace_period = (time.monotonic() - swap_time_at_receipt) >= GRACE_PERIOD
                     if still_same_avatar and past_grace_period:
                         log.debug(f"Committing value {value} to address {address} ")
-                        self.confirmed_values[address] = {
-                            'value': value,
-                            "min": min(existing_contents["min"], value),
-                            "max": max(existing_contents["max"], value),
-                            "saved": {
-                                "on_avatar_swap": existing_contents['saved']['on_avatar_swap'],
-                                "on_world_swap": existing_contents['saved']['on_world_swap']
-                            }
-                        }
+                        self.confirmed_values[address] = build_param_dict(
+                            value=value,
+                            min=min(existing_contents["min"], value),
+                            max=max(existing_contents["max"], value),
+                            s_on_avatar_swap=existing_contents['saved']['on_avatar_swap'],
+                            s_on_world_swap=existing_contents['saved']['on_world_swap']
+                        )
                     else:
                         if not still_same_avatar:
                             log.debug(f"Rejected commit for {address}={value} (no longer same avatar)")
@@ -120,7 +137,8 @@ class ParamTracker:
             self.pending[address] = t
             t.start()
 
-    def handle_avatar_change(self, address, new_avatar_id):
+    def handle_avatar_change(self, address, new_avatar_id) -> dict:
+        """Returns all saved params."""
         log.info("Handling avatar change event")
         with self.lock:
             log.debug(f"Discarding {len(self.pending)} updates.")
@@ -137,7 +155,12 @@ class ParamTracker:
 
             update_all_params(self.confirmed_values)
 
-tracker = ParamTracker(live_tracked_params)
+        return filtered_params
+    
+
+def find_avatar_osc_config(avatar_id:str) -> (Path | None):
+    matches = OSC_PATH.glob(f"*/Avatars/{avatar_id}.json")
+    return max(matches, key=lambda p: p.stat().st_mtime, default=None)
 
 def lerp(a, b, t):
     return a + (b-a)*t
@@ -163,8 +186,21 @@ def is_fury_param(p:str):
     return any([re.match(pat, p) is not None for pat in VRCF_UNSAVEABLE_PATTERNS])
 
 def on_avatar_change(address, *args):
+    global live_tracked_params
     log.info(f"Received avatar change event to {args[0]}")
-    tracker.handle_avatar_change(address, args[0])
+
+    live_tracked_params = tracker.handle_avatar_change(address, args[0])
+
+    # preload all params instead of waiting for it to be discovered
+    config_path = find_avatar_osc_config(args[0])
+    if config_path is not None:
+        log.info("Discovered avatar OSC config file, preloading parameters")
+        config_data = json.load(open(config_path, "r", encoding="utf-8-sig"))
+        for param in config_data["parameters"]:
+            if live_tracked_params.get(param['name']) is None:
+                live_tracked_params[param['name']] = build_param_dict()
+    else:
+        log.warning("Couldn't find OSC config file for current avatar, we either tried to find it too soon or the avatar is an SDK Test avatar.")
 
 def on_parameter(address, *args):
     global live_tracked_params
@@ -174,15 +210,13 @@ def on_parameter(address, *args):
 
     existing_contents = live_tracked_params.get(address, {"min":0, "max":1, "saved":{"on_avatar_swap": False, "on_world_swap": False}})
 
-    live_tracked_params[address] = {
-        "value": value,
-        "min": min(existing_contents["min"], value),
-        "max": max(existing_contents["max"], value),
-        "saved": {
-            "on_avatar_swap": existing_contents['saved']['on_avatar_swap'],
-            "on_world_swap": existing_contents['saved']['on_world_swap']
-        }
-    }
+    live_tracked_params[address] = build_param_dict(
+        value=value,
+        min=min(existing_contents["min"], value),
+        max=max(existing_contents["max"], value),
+        s_on_avatar_swap=existing_contents['saved']['on_avatar_swap'],
+        s_on_world_swap=existing_contents['saved']['on_world_swap']
+    )
 
     if live_tracked_params[address]["saved"]["on_avatar_swap"]:
         log.debug(f"Saved param change: {address}={value}")
@@ -199,6 +233,7 @@ def pygame_loop():
 
     screen = pygame.display.set_mode((730, 600), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
     font = pygame.font.SysFont(None, FONT_SIZE)
+    font_italics = pygame.font.SysFont(None, FONT_SIZE, italic=True)
     bigger_font = pygame.font.SysFont(None, 50)
     clock = pygame.time.Clock()
     padding = (5, 5)
@@ -206,7 +241,7 @@ def pygame_loop():
 
     while running:
         screen.fill((30, 30, 30))
-        
+        initial_click_pos = (-1, -1)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -215,6 +250,7 @@ def pygame_loop():
                 offset += event.y * 30
 
             if event.type == pygame.MOUSEBUTTONDOWN:
+                initial_click_pos = event.pos
                 if event.button == 1:
                     # discover the param at that Y value
                     param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
@@ -226,17 +262,24 @@ def pygame_loop():
                             log.debug(f"Received click for parameter {param_name}")
                             param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
                             tracker.confirmed_values[param_name] = param_content
-                        elif event.pos[0] <= 700:
-                            # compute the value to set it to based on the mouse's X position
-                            # 700 is max, 0 is minimum
-                            if type(param_content['value']) == bool:
-                                set_param(param_name, not param_content['value'])
-                            else:
-                                t = event.pos[0]/700
-                                set_param(param_name, lerp(param_content['min'], param_content['max'], t))
+                        elif event.pos[0] <= 700: # handle bool value setting here to prevent it from switching every frame
+                            if param_content.get("value") is not None:
+                                if type(param_content['value']) == bool:
+                                    set_param(param_name, not param_content['value'])
 
-                        # elif event.pos[0] >= 728 and event.pos[0] <= 746:
-                        #     registered_params[params[param_index]]['saved']['on_world_swap'] = not registered_params[params[param_index]]['saved']['on_world_swap']
+        if pygame.mouse.get_pressed()[0]:
+            pos = pygame.mouse.get_pos()
+            if initial_click_pos[0] <= 700:
+                # compute the value to set it to based on the mouse's X position
+                # 700 is max, 0 is minimum
+                if param_content.get("value") is not None:
+                    if type(param_content['value']) != bool:
+                        t = pos[0]/700
+                        t = max(0.0, min(t, 1.0))
+                        new_value = lerp(param_content['min'], param_content['max'], t)
+                        if type(param_content['value']) == int:
+                            new_value = int(new_value)
+                        set_param(param_name, new_value)
             
             if event.type == pygame.VIDEORESIZE:
                 screen = pygame.display.set_mode((730, max(event.h, 300)), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
@@ -249,28 +292,26 @@ def pygame_loop():
             param_is_vrcfury = is_fury_param(param)
 
             padded_y_pos = (FONT_SIZE + padding[1]) * index + offset
-            label_text = font.render(f"{param}", True, (255, 255, 255))
-            if type(content['value']) == float:
-                value_text = font.render(f"{content['value']:.4f}", True, (255, 255, 255))
-            else:
-                value_text = font.render(str(content['value']), True, (255, 255, 255))
-
-            value = (content["value"] - content["min"]) / (content["max"] - content["min"])
-
-            # value_saved = tracker.confirmed_values.get(param)
-            # if value_saved:
-            #     value_saved = (value_saved['value'] - content["min"]) / (content["max"] - content["min"])
-
             color = (0, 130, 0)
             if param in UNSAVEABLE:
                 color = (130, 0, 0)
             elif param_is_vrcfury:
                 color = (130, 130, 0)
-
             pygame.draw.rect(screen, (60, 60, 60), (0, padded_y_pos, 700, FONT_SIZE))
-            # if value_saved:
-            #     pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value_saved, FONT_SIZE/2))
-            pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value, FONT_SIZE))
+
+            if content.get('value') is not None:
+                label_text = font.render(f"{param}", True, (255, 255, 255))
+                if type(content['value']) == float:
+                    value_text = font.render(f"{content['value']:.4f}", True, (255, 255, 255))
+                else:
+                    value_text = font.render(str(content['value']), True, (255, 255, 255))
+
+                value = (content["value"] - content["min"]) / (content["max"] - content["min"])
+
+                pygame.draw.rect(screen, color, (0, padded_y_pos, 700 * value, FONT_SIZE))
+            else:
+                label_text = font_italics.render(f"{param}", True, (200, 200, 200))
+                value_text = font.render(f"??", True, (255, 255, 255))
 
             screen.blit(label_text, (padding[0], padded_y_pos + padding[1]/2))
 
@@ -322,6 +363,8 @@ async def main():
         while running and pygame_thread.is_alive():
             await asyncio.sleep(1)
         log.info("Detected pygame thread death / window close")
+        if running:
+            log.warning("Pygame thread death for unknown reasons.")
 
     finally:
         log.info("Closing OSC Session")
@@ -338,4 +381,5 @@ async def main():
     log.info("Program finished")
 
 if __name__ == "__main__":
+    tracker = ParamTracker(live_tracked_params)
     asyncio.run(main())
