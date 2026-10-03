@@ -411,18 +411,25 @@ async def main():
             log.info("Pygame thread still alive, signaling to stop...")
             stop_signal.set()
             pygame_thread.join()
+
+    except:
+        log.exception("Crash occured.")
+
     finally:
         log.info("Closing OSC Session")
         server.close()
 
-        log.info("Saving parameters to local file")
-        filtered_params = {}
-        for param, content in tracker.confirmed_values.items():
-            if content['saved']['on_avatar_swap']:
-                filtered_params[param] = content
+        try:
+            log.info("Saving parameters to local file")
+            filtered_params = {}
+            for param, content in tracker.confirmed_values.items():
+                if content['saved']['on_avatar_swap']:
+                    filtered_params[param] = content
 
-        with open("./params.json", "w", encoding="utf-8") as save:
-            json.dump(filtered_params, save)
+            with open("./params.json", "w", encoding="utf-8") as save:
+                json.dump(filtered_params, save)
+        except:
+            log.exception("Failed to save parameters.")
     
         # gather info about exit data
         exit_code = (
