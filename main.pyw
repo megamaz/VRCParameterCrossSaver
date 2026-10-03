@@ -386,6 +386,7 @@ async def main():
         daemon=True,
         args=(stop_signal,)
     )
+    vr_quitting = False
 
     pygame_thread.start()
 
