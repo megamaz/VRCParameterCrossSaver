@@ -77,7 +77,7 @@ log = setup_logging()
 # setup steamvr autolaunch
 log.info("Setting up SteamVR auto-launch")
 active_path = Path(__file__).resolve().parent
-openvr.init(openvr.VRApplication_Utility)
+vr = openvr.init(openvr.VRApplication_Utility)
 apps = openvr.VRApplications()
 if not apps.isApplicationInstalled("megamaz.VRChatParameterCrossSaver"):
     log.info("Detected app not installed, installing")
@@ -255,7 +255,7 @@ def on_parameter(address, *args):
         log.debug(f"Saved param change: {address}={value}")
         tracker.handle_param_change(address, *args)
 
-def pygame_loop():
+def pygame_loop(stop_event:threading.Event):
     global running
     global live_tracked_params
 
@@ -272,7 +272,7 @@ def pygame_loop():
     padding = (5, 5)
     offset = 50
 
-    while running:
+    while running and not stop_event.is_set():
         screen.fill((30, 30, 30))
         initial_click_pos = (-1, -1)
         for event in pygame.event.get():
@@ -369,13 +369,22 @@ def pygame_loop():
 
         pygame.display.flip()
         clock.tick(60)
-            
+
+def steamvr_quitting() -> bool:
+    event = openvr.VREvent_t()
+    while vr.pollNextEvent(event):
+        if event.eventType in (openvr.VREvent_Quit, openvr.VREvent_ProcessQuit):
+            return True
+    return False       
 
 async def main():
     global running
+
+    stop_signal = threading.Event()
     pygame_thread = threading.Thread(
         target=pygame_loop,
         daemon=True,
+        args=(stop_signal,)
     )
 
     pygame_thread.start()
@@ -393,11 +402,17 @@ async def main():
 
         log.info("Starting VRChat OSC Session")
         await server
-        while running and pygame_thread.is_alive():
-            await asyncio.sleep(1)
-        log.info("Detected pygame thread death / window close")
-        if running:
-            log.warning("Pygame thread death for unknown reasons.")
+        quitting = steamvr_quitting()
+        while running and pygame_thread.is_alive() and not quitting:
+            quitting = steamvr_quitting()
+            await asyncio.sleep(0.25)
+        # mux into three bit for exit code
+        exit_code = (running << 2) | (pygame_thread.is_alive() << 1) | (quitting << 0)
+        log.info(f"Program finished with exit code {exit_code}")
+        if pygame_thread.is_alive():
+            log.info("Pygame thread still alive, signaling to stop...")
+            stop_signal.set()
+            pygame_thread.join()
 
     finally:
         log.info("Closing OSC Session")
@@ -409,9 +424,12 @@ async def main():
             if content['saved']['on_avatar_swap']:
                 filtered_params[param] = content
 
-        json.dump(filtered_params, open("./params.json", "w", encoding="utf-8"))
+        with open("./params.json", "w", encoding="utf-8") as save:
+            json.dump(filtered_params, save)
     
-    log.info("Program finished")
+    log.info("Program finished, acknowledging.")
+    vr.acknowledgeQuit_Exiting()
+    openvr.shutdown()
 
 if __name__ == "__main__":
     tracker = ParamTracker(live_tracked_params)
