@@ -1,0 +1,38 @@
+0 (0000): Regular exit caused by manually closing window.
+2 (0010): Exit caused by Pygame thread death.
+3 (0011): Exit caused by unknown crash.
+4 (0100): Manual exit during SteamVR closing.
+6 (0110): Exit caused by Pygame thread death, possibly caused by SteamVR closing.
+7 (0111): Exit caused by unknown crash, possibly caused by SteamVR closing.
+C (1100): Manual exit during SteamVR closing.
+E (1110): Regular exit caused by SteamVR closing.
+
+4/C note:
+    This can happen if you close SteamVR and close the app within 0.25 seconds.
+    I'm not sure which code would happen. Either can happen as this probably results in a race condition.
+    I'd imagine 4 is more likely, but still.
+
+//////// IMPOSSIBLE CODES ///////////
+1 (0001):
+    Pygame thread still alive after manually closing window.
+
+5 (0101):
+    Pygame thread still alive after manually closing window.
+
+8 (1000):
+    Stop signal being set despite successful regular exit.
+
+9 (1001):
+    Pygame thread still alive despite manually closing window and stop signal being set.
+
+A (1010):
+    Main loop would have to exit without a crash despite not meeting the exit conditions.
+
+B (1011):
+    Pygame thread still alive despite stop signal being set.
+
+D (1101):
+    Pygame thread still alive despite manually closing window and stop signal being set.
+
+F (1111):
+    Pygame thread still alive despite stop signal being set.

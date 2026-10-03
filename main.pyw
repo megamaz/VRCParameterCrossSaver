@@ -320,6 +320,8 @@ def pygame_loop(stop_event:threading.Event):
         index = 1
 
         for param, content in live_tracked_params.items():
+            font.set_italic(True)
+            font.set_italic(False)
             # for drawing
             is_item_saveable = param not in UNSAVEABLE
             param_is_vrcfury = is_fury_param(param)
@@ -402,18 +404,14 @@ async def main():
 
         log.info("Starting VRChat OSC Session")
         await server
-        quitting = steamvr_quitting()
-        while running and pygame_thread.is_alive() and not quitting:
-            quitting = steamvr_quitting()
+        vr_quitting = steamvr_quitting()
+        while running and pygame_thread.is_alive() and not vr_quitting:
+            vr_quitting = steamvr_quitting()
             await asyncio.sleep(0.25)
-        # mux into three bit for exit code
-        exit_code = (running << 2) | (pygame_thread.is_alive() << 1) | (quitting << 0)
-        log.info(f"Program finished with exit code {exit_code}")
         if pygame_thread.is_alive():
             log.info("Pygame thread still alive, signaling to stop...")
             stop_signal.set()
             pygame_thread.join()
-
     finally:
         log.info("Closing OSC Session")
         server.close()
@@ -427,9 +425,21 @@ async def main():
         with open("./params.json", "w", encoding="utf-8") as save:
             json.dump(filtered_params, save)
     
-    log.info("Program finished, acknowledging.")
+    # gather info about exit data
+    exit_code = (
+        (stop_signal.is_set()     << 3) |
+        (vr_quitting              << 2) |
+        (running                  << 1) |
+        (pygame_thread.is_alive() << 0)
+    )
+    log.info(f"Program finished with exit code '{hex(exit_code).upper().replace("X", "x")}'")
+
     vr.acknowledgeQuit_Exiting()
     openvr.shutdown()
+    if pygame_thread.is_alive():
+        log.info("Pygame thread still alive, signaling to stop...")
+        stop_signal.set()
+        pygame_thread.join()
 
 if __name__ == "__main__":
     tracker = ParamTracker(live_tracked_params)
