@@ -423,21 +423,21 @@ async def main():
         with open("./params.json", "w", encoding="utf-8") as save:
             json.dump(filtered_params, save)
     
-    # gather info about exit data
-    exit_code = (
-        (stop_signal.is_set()     << 3) |
-        (vr_quitting              << 2) |
-        (running                  << 1) |
-        (pygame_thread.is_alive() << 0)
-    )
-    log.info(f"Program finished with exit code '{hex(exit_code).upper().replace("X", "x")}'")
+        # gather info about exit data
+        exit_code = (
+            (stop_signal.is_set()     << 3) |
+            (vr_quitting              << 2) |
+            (running                  << 1) |
+            (pygame_thread.is_alive() << 0)
+        )
+        log.info(f"Program finished with exit code '{hex(exit_code).upper().replace("X", "x")}'")
 
-    vr.acknowledgeQuit_Exiting()
-    openvr.shutdown()
-    if pygame_thread.is_alive():
-        log.info("Pygame thread still alive, signaling to stop...")
-        stop_signal.set()
-        pygame_thread.join()
+        vr.acknowledgeQuit_Exiting()
+        openvr.shutdown()
+        if pygame_thread.is_alive():
+            log.info("Pygame thread still alive, signaling to stop...")
+            stop_signal.set()
+            pygame_thread.join()
 
 if __name__ == "__main__":
     tracker = ParamTracker(live_tracked_params)
