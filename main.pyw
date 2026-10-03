@@ -320,8 +320,6 @@ def pygame_loop(stop_event:threading.Event):
         index = 1
 
         for param, content in live_tracked_params.items():
-            font.set_italic(True)
-            font.set_italic(False)
             # for drawing
             is_item_saveable = param not in UNSAVEABLE
             param_is_vrcfury = is_fury_param(param)
