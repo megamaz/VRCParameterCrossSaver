@@ -325,6 +325,10 @@ def pygame_loop(stop_event:threading.Event):
             param_is_vrcfury = is_fury_param(param)
 
             padded_y_pos = (FONT_SIZE + padding[1]) * index + offset
+            if padded_y_pos < 0 or padded_y_pos > pygame.display.get_window_size()[1]:
+                index += 1
+                continue
+
             color = (0, 130, 0)
             if param in UNSAVEABLE:
                 color = (130, 0, 0)
