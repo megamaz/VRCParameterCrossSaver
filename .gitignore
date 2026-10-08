@@ -3,4 +3,5 @@ venv
 __pycache__
 *.log
 logviewer.py
+log_timings.py
 *.vrmanifest

@@ -68,7 +68,7 @@ EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 # vrchat sends out saved param updates immediately before the avatar change event, all within 0.1 seconds.
 # this hold time needs to be small to avoid real changes from being discarded, and short so that it doesn't catch fake changes.
 HOLD_TIME = 0.5
-GRACE_PERIOD = 0.9
+GRACE_PERIOD = 1.0
 
 client = vrc_client()
 
@@ -163,7 +163,7 @@ class ParamTracker:
                         if not still_same_avatar:
                             log.debug(f"Rejected commit for {address}={value} (no longer same avatar)")
                         if not past_grace_period:
-                            log.debug(f"Rejected commit for {address}={value} (past grace period)")
+                            log.debug(f"Rejected commit for {address}={value} (not past grace period)")
                     self.pending.pop(address, None)
 
             t = threading.Timer(HOLD_TIME, commit)
@@ -186,7 +186,9 @@ class ParamTracker:
                 if content['saved']['on_avatar_swap']:
                     filtered_params[param] = content
 
-            update_all_params(self.confirmed_values)
+            # delay saved param updates to avoid interfering with VRChat's new avatar update
+            update = threading.Timer(GRACE_PERIOD, update_all_params, args=[self.confirmed_values,])
+            update.start()
 
         return filtered_params
     
