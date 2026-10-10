@@ -70,9 +70,21 @@ EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 HOLD_TIME = 0.5
 GRACE_PERIOD = 1.0
 
-client = vrc_client()
-
 log = setup_logging()
+
+# FIXME create temporary override for logging of invalid OSC messages.
+# remove this once https://feedback.vrchat.com/open-beta/p/1931-invalid-osc-messages gets patched.
+# although this can remain an issue for parameter names with complex unicode characters. needs testing
+from pythonosc.osc_server import AsyncIOOSCUDPServer
+orig = AsyncIOOSCUDPServer._OSCProtocolFactory.datagram_received
+def bad_unicode_catcher(self, data, addr):
+    try:
+        orig(self, data, addr)
+    except UnicodeDecodeError:
+        log.error(f"Bad packet from {addr} (len={len(data)}): {data}")
+AsyncIOOSCUDPServer._OSCProtocolFactory.datagram_received = bad_unicode_catcher
+
+client = vrc_client()
 
 # setup steamvr autolaunch
 log.info("Setting up SteamVR auto-launch")
@@ -230,7 +242,8 @@ def on_avatar_change(address, *args):
     config_path = find_avatar_osc_config(args[0])
     if config_path is not None:
         log.info("Discovered avatar OSC config file, preloading parameters")
-        config_data = json.load(open(config_path, "r", encoding="utf-8-sig"))
+        with open(config_path, "r", encoding="utf-8-sig") as load_osc:
+            config_data = json.load(load_osc)
         for param in config_data["parameters"]:
             if live_tracked_params.get(param['name']) is None:
                 live_tracked_params[param['name']] = build_param_dict()
@@ -379,7 +392,7 @@ def pygame_loop(stop_event:threading.Event):
 def steamvr_quitting() -> bool:
     event = openvr.VREvent_t()
     while vr.pollNextEvent(event):
-        if event.eventType in (openvr.VREvent_Quit, openvr.VREvent_ProcessQuit):
+        if event.eventType == openvr.VREvent_Quit:
             return True
     return False       
 
