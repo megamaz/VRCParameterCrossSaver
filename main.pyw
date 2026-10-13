@@ -1,5 +1,6 @@
 #! ./venv/Scripts/pythonw.exe
 
+import urllib.request
 import threading
 import asyncio
 import pygame
@@ -10,10 +11,15 @@ import copy
 import os
 import re
 
+from schema_updater import to_latest, get_blank_schema
 from vrchat_oscquery.asyncio import vrc_osc
 from vrchat_oscquery.common import vrc_client, dict_to_dispatcher
+from zeroconf import ServiceStateChange
+from zeroconf.asyncio import AsyncZeroconf, AsyncServiceBrowser, AsyncServiceInfo
 from custom_logger import setup_logging
 from pathlib import Path
+
+SERVICE = "_oscjson._tcp.local."
 
 OSC_PATH = Path.home() / "AppData" / "LocalLow" / "VRChat" / "VRChat" / "OSC"
 
@@ -70,6 +76,10 @@ EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 HOLD_TIME = 0.5
 GRACE_PERIOD = 1.0
 
+OPENVR_APP_ID = "megamaz.VRChatParameterCrossSaver"
+
+JSON_SCHEMA_VERSION = 2
+
 log = setup_logging()
 
 # FIXME create temporary override for logging of invalid OSC messages.
@@ -91,12 +101,12 @@ log.info("Setting up SteamVR auto-launch")
 active_path = Path(__file__).resolve().parent
 vr = openvr.init(openvr.VRApplication_Utility)
 apps = openvr.VRApplications()
-if not apps.isApplicationInstalled("megamaz.VRChatParameterCrossSaver"):
+if not apps.isApplicationInstalled(OPENVR_APP_ID):
     log.info("Detected app not installed, installing")
     manifest = {
         "applications": [
             {
-                "app_key":"megamaz.VRChatParameterCrossSaver",
+                "app_key":OPENVR_APP_ID,
                 "launch_type": "binary",
                 "binary_path_windows": str(active_path / "venv" / "Scripts" / "pythonw.exe"),
                 "arguments": str(active_path / "main.pyw"),
@@ -113,15 +123,32 @@ if not apps.isApplicationInstalled("megamaz.VRChatParameterCrossSaver"):
     manifest_path = active_path / "app.vrmanifest"
     manifest_path.write_text(json.dumps(manifest))
     apps.addApplicationManifest(str(manifest_path))
-    apps.setApplicationAutoLaunch("megamaz.VRChatParameterCrossSaver", True)
+    apps.setApplicationAutoLaunch(OPENVR_APP_ID, True)
     log.info("Successfully installed app")
 else:
     log.info("App already installed")
 
 if not os.path.exists("./params.json"):
-    open("./params.json", "w", encoding="utf-8").write(r"{}")
+    log.info("No save file found, creating blank data.")
+    with open("./params.json", "w", encoding="utf-8") as create_data:
+        json.dump(get_blank_schema(JSON_SCHEMA_VERSION), create_data, indent=5)
 
-live_tracked_params = json.load(open("./params.json", "r", encoding="utf-8"))
+log.info("Loading saved data")
+with open("./params.json", "r", encoding="utf-8") as preload_params:
+    preload_data = json.load(preload_params)
+    # check for schema update
+    if preload_data.get("version", 1) < JSON_SCHEMA_VERSION:
+        preload_data = to_latest(preload_data, preload_data.get("version", 1))
+    elif preload_data.get("version", 1) > JSON_SCHEMA_VERSION:
+        log.warning("Saved data schema too new, moving to 'params.json.new', and loading blank data as save data.")
+        os.rename("./params.json", "./params.json.new")
+        preload_data = get_blank_schema(JSON_SCHEMA_VERSION)
+    else:
+        log.debug("Schema version match")
+
+    live_tracked_params = preload_data["params"]
+    whitelist:list = preload_data["whitelist"]
+
 log.debug(f"Saved parameter values: {json.dumps(live_tracked_params, indent=4)}")
 running = True
 
@@ -147,6 +174,7 @@ class ParamTracker:
         self.swap_time = 0.0
         self.confirmed_values = copy.deepcopy(init_confirm)
         self.pending = {}            # address -> Timer
+        self.avatar_name = "Unknown"
 
     def handle_param_change(self, address, *args):
         value = args[0] if args else None
@@ -199,11 +227,53 @@ class ParamTracker:
                     filtered_params[param] = content
 
             # delay saved param updates to avoid interfering with VRChat's new avatar update
-            update = threading.Timer(GRACE_PERIOD, update_all_params, args=[self.confirmed_values,])
-            update.start()
+            if new_avatar_id in whitelist:
+                log.info("Avatar in whitelist, sending param update.")
+                update = threading.Timer(GRACE_PERIOD, update_all_params, args=[self.confirmed_values,])
+                update.start()
 
         return filtered_params
-    
+
+def _fetch(url, timeout):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.load(r)
+
+async def get_current_avatar(mdns_timeout=5, http_timeout=3):
+    found = asyncio.Event()
+    endpoint = None
+    tasks = set()
+
+    async def resolve(zc, name):
+        nonlocal endpoint
+        info = AsyncServiceInfo(SERVICE, name)
+        if await info.async_request(zc, 3000) and info.port:
+            endpoint = (info.parsed_addresses()[0], info.port)
+            found.set()
+
+    def on_change(zeroconf, service_type, name, state_change):
+        if state_change is ServiceStateChange.Removed:
+            return
+        if not name.startswith("VRChat-Client"):
+            return
+        t = asyncio.ensure_future(resolve(zeroconf, name))
+        tasks.add(t)
+        t.add_done_callback(tasks.discard)
+
+    aiozc = AsyncZeroconf()
+    browser = AsyncServiceBrowser(aiozc.zeroconf, SERVICE, handlers=[on_change])
+    try:
+        try:
+            await asyncio.wait_for(found.wait(), mdns_timeout)
+        except asyncio.TimeoutError:
+            return None  # vrchat not running / osc off
+        host, port = endpoint
+        data = await asyncio.to_thread(
+            _fetch, f"http://{host}:{port}/avatar/change", http_timeout
+        )
+        return data["VALUE"][0]
+    finally:
+        await browser.async_cancel()
+        await aiozc.async_close()
 
 def find_avatar_osc_config(avatar_id:str) -> (Path | None):
     matches = OSC_PATH.glob(f"*/Avatars/{avatar_id}.json")
@@ -247,6 +317,7 @@ def on_avatar_change(address, *args):
         for param in config_data["parameters"]:
             if live_tracked_params.get(param['name']) is None:
                 live_tracked_params[param['name']] = build_param_dict()
+        tracker.avatar_name = config_data["name"]
     else:
         log.warning("Couldn't find OSC config file for current avatar, we either tried to find it too soon or the avatar is an SDK Test avatar.")
 
@@ -266,13 +337,14 @@ def on_parameter(address, *args):
         s_on_world_swap=existing_contents['saved']['on_world_swap']
     )
 
-    if live_tracked_params[address]["saved"]["on_avatar_swap"]:
+    if live_tracked_params[address]["saved"]["on_avatar_swap"] and tracker.current_avatar_id in whitelist:
         log.debug(f"Saved param change: {address}={value}")
         tracker.handle_param_change(address, *args)
 
 def pygame_loop(stop_event:threading.Event):
     global running
     global live_tracked_params
+    global whitelist
 
     log.info("Starting pygame loop")
 
@@ -283,6 +355,7 @@ def pygame_loop(stop_event:threading.Event):
     font = pygame.font.SysFont(None, FONT_SIZE)
     font_italics = pygame.font.SysFont(None, FONT_SIZE, italic=True)
     bigger_font = pygame.font.SysFont(None, 50)
+    bigger_font_italics = pygame.font.SysFont(None, 50, italic=True)
     clock = pygame.time.Clock()
     padding = (5, 5)
     offset = 50
@@ -300,24 +373,39 @@ def pygame_loop(stop_event:threading.Event):
             if event.type == pygame.MOUSEBUTTONDOWN:
                 initial_click_pos = event.pos
                 if event.button == 1:
-                    # discover the param at that Y value
-                    param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
-                    params = list(live_tracked_params.keys())
-                    if param_index < len(params) and params[param_index] not in UNSAVEABLE:
-                        param_name = params[param_index]
-                        param_content = live_tracked_params[param_name]
-                        if event.pos[0] >= 705 and event.pos[0] <= 722:
-                            log.debug(f"Received click for parameter {param_name}")
-                            param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
-                            tracker.confirmed_values[param_name] = param_content
-                        elif event.pos[0] <= 700: # handle bool value setting here to prevent it from switching every frame
-                            if param_content.get("value") is not None:
-                                if type(param_content['value']) == bool:
-                                    set_param(param_name, not param_content['value'])
+                    if event.pos[1] <= 55: # whitelist click
+                        if event.pos[0] >= 645 and tracker.current_avatar_id is not None:
+                            log.debug("Received whitelist click.")
+                            if tracker.current_avatar_id in whitelist:
+                                whitelist.remove(tracker.current_avatar_id)
+                                log.debug(f"Avatar '{tracker.current_avatar_id}' removed from whitelist.")
+                            else:
+                                log.debug(f"Avatar '{tracker.current_avatar_id}' added to whitelist, sending param update.")
+                                whitelist.append(tracker.current_avatar_id)
+                                update_all_params(tracker.confirmed_values)
+
+                    else: # param click
+                        # discover the param at that Y value
+                        param_index = int((event.pos[1] - offset) / (FONT_SIZE + padding[1])) - 1
+                        params = list(live_tracked_params.keys())
+                        if param_index < len(params) and params[param_index] not in UNSAVEABLE:
+                            param_name = params[param_index]
+                            param_content = live_tracked_params[param_name]
+                            if event.pos[0] >= 705 and event.pos[0] <= 722:
+                                log.debug(f"Received click for parameter {param_name}")
+                                param_content['saved']['on_avatar_swap'] = not param_content['saved']['on_avatar_swap']
+                                tracker.confirmed_values[param_name] = param_content
+                            elif event.pos[0] <= 700: # handle bool value setting here to prevent it from switching every frame
+                                if param_content.get("value") is not None:
+                                    if type(param_content['value']) == bool:
+                                        set_param(param_name, not param_content['value'])
+
+            if event.type == pygame.VIDEORESIZE:
+                screen = pygame.display.set_mode((730, max(event.h, 300)), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
 
         if pygame.mouse.get_pressed()[0]:
             pos = pygame.mouse.get_pos()
-            if initial_click_pos[0] <= 700:
+            if initial_click_pos[0] <= 700 and pos[1] > 55:
                 # compute the value to set it to based on the mouse's X position
                 # 700 is max, 0 is minimum
                 if param_content.get("value") is not None:
@@ -329,8 +417,6 @@ def pygame_loop(stop_event:threading.Event):
                             new_value = int(new_value)
                         set_param(param_name, new_value)
             
-            if event.type == pygame.VIDEORESIZE:
-                screen = pygame.display.set_mode((730, max(event.h, 300)), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
                         
         index = 1
 
@@ -381,9 +467,15 @@ def pygame_loop(stop_event:threading.Event):
             index += 1
 
         pygame.draw.rect(screen, (30, 30, 30), (0, 0, 820, 70))
-        instruction_text = bigger_font.render("Check boxes on right to mark as saved.", True, (255, 255, 255))
-        # checkboxes_label = font.render("on avi swap | on world swap", True, (255, 255, 255))
-        screen.blit(instruction_text, (10, 10))
+
+        if tracker.current_avatar_id is None:
+            whitelist_label = bigger_font_italics.render(f"Whitelist avatar: {tracker.avatar_name}", True, (200, 200, 200))
+            pygame.draw.rect(screen, (120, 120, 120), (700 - 50 - padding[0], padding[1], 50, 50), 6)
+        else:
+            whitelist_label = bigger_font.render(f"Whitelist avatar: {tracker.avatar_name}", True, (255, 255, 255))
+            pygame.draw.rect(screen, (255, 255, 255), (700 - 50 - padding[0], padding[1], 50, 50), 0 if tracker.current_avatar_id in whitelist else 6)    
+
+        screen.blit(whitelist_label, (10, 10))
         # screen.blit(checkboxes_label, (653, 55))
 
         pygame.display.flip()
@@ -417,11 +509,12 @@ async def main():
     try:
         # sending out internally saved values, before the server started
         # no risk of this containing stale data
-        log.debug("Updating saved parameters with data from save file")
-        update_all_params(live_tracked_params)
+        # log.debug("Updating saved parameters with data from save file")
+        # update_all_params(live_tracked_params)
 
         log.info("Starting VRChat OSC Session")
         await server
+        on_avatar_change("/avatar/change", await get_current_avatar())
         vr_quitting = steamvr_quitting()
         while running and pygame_thread.is_alive() and not vr_quitting:
             vr_quitting = steamvr_quitting()
@@ -446,7 +539,12 @@ async def main():
                     filtered_params[param] = content
 
             with open("./params.json", "w", encoding="utf-8") as save:
-                json.dump(filtered_params, save)
+                save_data = {
+                    "version": JSON_SCHEMA_VERSION,
+                    "whitelist": whitelist,
+                    "params": filtered_params
+                }
+                json.dump(save_data, save, indent=5)
         except:
             log.exception("Failed to save parameters.")
     
