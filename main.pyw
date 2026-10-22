@@ -76,11 +76,31 @@ EYE_HEIGHT_PARAM = "EyeHeightAsMeters"
 HOLD_TIME = 0.5
 GRACE_PERIOD = 1.0
 
-OPENVR_APP_ID = "megamaz.VRChatParameterCrossSaver"
-
 JSON_SCHEMA_VERSION = 2
 
+ACTIVE_PATH = Path(__file__).resolve().parent
+BINARY_PATH = str(ACTIVE_PATH / "venv" / "Scripts" / "pythonw.exe")
+OPENVR_APP_ID = "megamaz.VRChatParameterCrossSaver"
+VR_MANIFEST = {
+    "applications": [
+        {
+            "app_key":OPENVR_APP_ID,
+            "launch_type": "binary",
+            "binary_path_windows": BINARY_PATH,
+            "arguments": str(ACTIVE_PATH / "main.pyw"),
+            "working_directory": str(ACTIVE_PATH),
+            "is_dashboard_overlay": True,
+            "strings": {
+                "en_us": {
+                    "name": "VRChat Parameter Cross-Saver"
+                }
+            }
+        }
+    ]
+}
+
 log = setup_logging()
+vr = openvr.init(openvr.VRApplication_Utility)
 
 # FIXME create temporary override for logging of invalid OSC messages.
 # remove this once https://feedback.vrchat.com/open-beta/p/1931-invalid-osc-messages gets patched.
@@ -95,38 +115,6 @@ def bad_unicode_catcher(self, data, addr):
 AsyncIOOSCUDPServer._OSCProtocolFactory.datagram_received = bad_unicode_catcher
 
 client = vrc_client()
-
-# setup steamvr autolaunch
-log.info("Setting up SteamVR auto-launch")
-active_path = Path(__file__).resolve().parent
-vr = openvr.init(openvr.VRApplication_Utility)
-apps = openvr.VRApplications()
-if not apps.isApplicationInstalled(OPENVR_APP_ID):
-    log.info("Detected app not installed, installing")
-    manifest = {
-        "applications": [
-            {
-                "app_key":OPENVR_APP_ID,
-                "launch_type": "binary",
-                "binary_path_windows": str(active_path / "venv" / "Scripts" / "pythonw.exe"),
-                "arguments": str(active_path / "main.pyw"),
-                "working_directory": str(active_path),
-                "is_dashboard_overlay": True,
-                "strings": {
-                    "en_us": {
-                        "name": "VRChat Parameter Cross-Saver"
-                    }
-                }
-            }
-        ]
-    }
-    manifest_path = active_path / "app.vrmanifest"
-    manifest_path.write_text(json.dumps(manifest))
-    apps.addApplicationManifest(str(manifest_path))
-    apps.setApplicationAutoLaunch(OPENVR_APP_ID, True)
-    log.info("Successfully installed app")
-else:
-    log.info("App already installed")
 
 if not os.path.exists("./params.json"):
     log.info("No save file found, creating blank data.")
@@ -151,6 +139,30 @@ with open("./params.json", "r", encoding="utf-8") as preload_params:
 
 log.debug(f"Saved parameter values: {json.dumps(live_tracked_params, indent=4)}")
 running = True
+
+def steamvr_install():
+    apps = openvr.VRApplications()
+    manifest_path = ACTIVE_PATH / "app.vrmanifest"
+    manifest_path.write_text(json.dumps(VR_MANIFEST))
+    apps.addApplicationManifest(str(manifest_path))
+    apps.setApplicationAutoLaunch(OPENVR_APP_ID, True)
+    log.info("App installed")
+
+def steamvr_setup_check():
+    apps = openvr.VRApplications()
+    log.info("Setting up SteamVR auto-launch")
+    if not apps.isApplicationInstalled(OPENVR_APP_ID):
+        log.info("Detected app not installed, installing")
+        steamvr_install()
+    elif apps.getApplicationPropertyString(OPENVR_APP_ID, openvr.VRApplicationProperty_BinaryPath_String) != BINARY_PATH:
+        log.info("Detected path change, reinstalling")
+        apps.setApplicationAutoLaunch(OPENVR_APP_ID, False)
+        old_dir = apps.getApplicationPropertyString(OPENVR_APP_ID, openvr.VRApplicationProperty_WorkingDirectory_String)
+        apps.removeApplicationManifest(old_dir)
+        log.info("App uninstalled")
+        steamvr_install()
+    else:
+        log.info("App already installed")
 
 def build_param_dict(value=None, min=0, max=1, s_on_avatar_swap=False, s_on_world_swap=False) -> dict:
     """Builds a parameter dictionary to be stored. All function params have a default, so no parameters will build a default uninitialized dict."""
@@ -491,6 +503,7 @@ def steamvr_quitting() -> bool:
 async def main():
     global running
 
+
     stop_signal = threading.Event()
     pygame_thread = threading.Thread(
         target=pygame_loop,
@@ -512,6 +525,7 @@ async def main():
         # log.debug("Updating saved parameters with data from save file")
         # update_all_params(live_tracked_params)
 
+        steamvr_setup_check()
         log.info("Starting VRChat OSC Session")
         await server
         on_avatar_change("/avatar/change", await get_current_avatar())
