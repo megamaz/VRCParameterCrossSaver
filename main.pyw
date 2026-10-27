@@ -86,9 +86,9 @@ VR_MANIFEST = {
         {
             "app_key":OPENVR_APP_ID,
             "launch_type": "binary",
-            "binary_path_windows": BINARY_PATH,
-            "arguments": str(ACTIVE_PATH / "main.pyw"),
-            "working_directory": str(ACTIVE_PATH),
+            "binary_path_windows": f"\"{BINARY_PATH}\"",
+            "arguments": f"\"{str(ACTIVE_PATH / "main.pyw")}\"",
+            "working_directory": f"\"{str(ACTIVE_PATH)}\"",
             "is_dashboard_overlay": True,
             "strings": {
                 "en_us": {
