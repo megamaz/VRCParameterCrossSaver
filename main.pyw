@@ -283,6 +283,8 @@ async def get_current_avatar(mdns_timeout=5, http_timeout=3):
             _fetch, f"http://{host}:{port}/avatar/change", http_timeout
         )
         return data["VALUE"][0]
+    except Exception as e:
+        log.error(f"Error fetching current avatar: {e}")
     finally:
         await browser.async_cancel()
         await aiozc.async_close()
@@ -539,7 +541,7 @@ async def main():
             pygame_thread.join()
 
     except:
-        log.exception("Crash occured.")
+        log.critical("Crash occured.", exc_info=True)
 
     finally:
         log.info("Closing OSC Session")
