@@ -54,7 +54,10 @@ UNSAVEABLE = ["ScaleFactor",
               "Earmuffs",
               "IsOnFriendsList",
               "AvatarVersion",
-              "IsAnimatorEnabled"]
+              "IsAnimatorEnabled",
+              "UserFaceTracking",
+              "UserEyeTracking"
+]
 
 # list of VRCF-controlled parameters that shouldn't be controlled.
 # TODO if a user is mean and decides to name their param something that matches this pattern, they'll be blocked from saving it.
