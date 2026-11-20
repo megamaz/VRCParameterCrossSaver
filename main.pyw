@@ -59,16 +59,11 @@ UNSAVEABLE = ["ScaleFactor",
               "UserEyeTracking"
 ]
 
-# list of VRCF-controlled parameters that shouldn't be controlled.
-# TODO if a user is mean and decides to name their param something that matches this pattern, they'll be blocked from saving it.
-# but who would do that?
-VRCF_UNSAVEABLE_PATTERNS = [
-    r"^VF\d+_SyncData(Bool|Num|Float)\d+", # VRCF Unlimited Parameters controlled variables
-    r"^VF\d+_SyncIndex\d+",                # ^^
-    r"^VF\d+_VF\d+",                       # some parameters are doubles of existing ones
-    r"^VF\d+_TC",                          # VRCF Tracking state tracker for each limb
-    r"^VF\d+_.*SPS",                       # VRCF SPS State trackers and managers
-    r"VF\d+_.*"                            # this one technically blocks all VF parameters making all the above ones redundant lol
+# List of patterns to match against parameters I don't recommend saving.
+UNSTABLE_PATTERNS = [
+    r"VF\d+_.*"                            # older VRCF versions use VF_[number].
+    r"VF_[a-zA-Z0-9].*_.*"                 # newer VRCF versions use a short randomly-generated string.
+    r".*__MA.*"                            # MA auto-generated parameters
 ]
 
 # only allow saving EyeHeightAsMeters, so that it can be manually handled later.
@@ -316,8 +311,8 @@ def update_all_params(param_content):
 
         set_param(param, content['value'])
 
-def is_fury_param(p:str):
-    return any([re.match(pat, p) is not None for pat in VRCF_UNSAVEABLE_PATTERNS])
+def is_unstable_param(p:str):
+    return any([re.match(pat, p) is not None for pat in UNSTABLE_PATTERNS])
 
 def on_avatar_change(address, *args):
     global live_tracked_params
@@ -440,7 +435,7 @@ def pygame_loop(stop_event:threading.Event):
         for param, content in live_tracked_params.items():
             # for drawing
             is_item_saveable = param not in UNSAVEABLE
-            param_is_vrcfury = is_fury_param(param)
+            param_is_unstable = is_unstable_param(param)
 
             padded_y_pos = (FONT_SIZE + padding[1]) * index + offset
             if padded_y_pos < 0 or padded_y_pos > pygame.display.get_window_size()[1]:
@@ -450,7 +445,7 @@ def pygame_loop(stop_event:threading.Event):
             color = (0, 130, 0)
             if param in UNSAVEABLE:
                 color = (130, 0, 0)
-            elif param_is_vrcfury:
+            elif param_is_unstable:
                 color = (130, 130, 0)
             pygame.draw.rect(screen, (60, 60, 60), (0, padded_y_pos, 700, FONT_SIZE))
 
