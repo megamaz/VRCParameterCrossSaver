@@ -558,7 +558,7 @@ async def main():
                     "whitelist": whitelist,
                     "params": filtered_params
                 }
-                json.dump(save_data, save, indent=5)
+                json.dump(save_data, save)
         except:
             log.exception("Failed to save parameters.")
     
