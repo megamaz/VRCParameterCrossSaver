@@ -26,7 +26,7 @@ OSC_PATH = Path.home() / "AppData" / "LocalLow" / "VRChat" / "VRChat" / "OSC"
 FONT_SIZE = 18
 
 # Parameters that will show up in the list but aren't parameters that can be saved (or parameters that aren't worth saving)
-UNSAVEABLE = ["ScaleFactor", 
+UNSAVEABLE = {"ScaleFactor", 
               "ScaleFactorInverse",
               "ScaleModified",
               "EyeHeightAsPercent",
@@ -57,13 +57,14 @@ UNSAVEABLE = ["ScaleFactor",
               "IsAnimatorEnabled",
               "UserFaceTracking",
               "UserEyeTracking"
-]
+}
 
 # List of patterns to match against parameters I don't recommend saving.
 UNSTABLE_PATTERNS = [
-    r"VF\d+_.*"                            # older VRCF versions use VF_[number].
-    r"VF_[a-zA-Z0-9].*_.*"                 # newer VRCF versions use a short randomly-generated string.
-    r".*__MA.*"                            # MA auto-generated parameters
+    r"^VF\d+_",                            # older VRCF versions use VF_[number].
+    r"^VF_[a-zA-Z0-9]*_",                  # newer VRCF versions use a short randomly-generated string.
+    r"\$[a-f0-9]{12}"                      # MA auto-generated parameters all contain a 12-character long hash
+    r"^ModularAvatar\$synthetic\$"         # MA auto-gen. these are technically also caught by the above regex, but can't be too safe.
 ]
 
 # only allow saving EyeHeightAsMeters, so that it can be manually handled later.
@@ -353,6 +354,16 @@ def on_parameter(address, *args):
         log.debug(f"Saved param change: {address}={value}")
         tracker.handle_param_change(address, *args)
 
+def param_sort_key(name):
+    group = -1
+    if live_tracked_params[name]['saved']['on_avatar_swap']:
+        group = 0 # saved params at the top
+    elif name in UNSAVEABLE:
+        group = 2 # unsaveable at the bottom
+    else:
+        group = 1 # everything else in the middle
+    return (group, name.lower())
+
 def pygame_loop(stop_event:threading.Event):
     global running
     global live_tracked_params
@@ -412,6 +423,15 @@ def pygame_loop(stop_event:threading.Event):
                                     if type(param_content['value']) == bool:
                                         set_param(param_name, not param_content['value'])
 
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r: # keybind for resetting min/max on params
+                    for k, v in live_tracked_params.items():
+                        live_tracked_params[k]['min'] = 0
+                        live_tracked_params[k]['max'] = 1
+                        if tracker.confirmed_values.get(k):
+                            tracker.confirmed_values[k]['min'] = 0
+                            tracker.confirmed_values[k]['max'] = 1
+
             if event.type == pygame.VIDEORESIZE:
                 screen = pygame.display.set_mode((730, max(event.h, 300)), pygame.RESIZABLE | pygame.HWSURFACE | pygame.DOUBLEBUF)
 
@@ -428,10 +448,10 @@ def pygame_loop(stop_event:threading.Event):
                         if type(param_content['value']) == int:
                             new_value = int(new_value)
                         set_param(param_name, new_value)
-            
                         
         index = 1
 
+        live_tracked_params = {name: live_tracked_params[name] for name in sorted(live_tracked_params, key=param_sort_key)}
         for param, content in live_tracked_params.items():
             # for drawing
             is_item_saveable = param not in UNSAVEABLE
